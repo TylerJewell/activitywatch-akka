@@ -830,3 +830,20 @@ Synced 1,234 events
 ```
 Backup done
 ```
+
+#### `src/main/java/io/akka/activitywatch/cli/AwClientCli.java`, `cli/AwCli.java` — what each command is for
+
+The one-line description of each subcommand, and of each of its options. These are the
+sentences the original's argument parser prints for `<command> --help`; the layout
+around them is that parser's, the sentences are ActivityWatch's.
+
+```
+  Generate an activity report
+  List all buckets
+  Query events from bucket with ID `bucket_id`
+  Run a query in file at `path` on the server
+  Send a heartbeat to bucket with ID `bucket_id` with JSON `data`
+--timezone
+Europe/Warsaw
+or higher.
+```
