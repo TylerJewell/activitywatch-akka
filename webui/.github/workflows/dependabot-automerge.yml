@@ -1,0 +1,29 @@
+name: Dependabot Auto-merge
+
+# NOTE: `merge-me-action` still needs the bot PAT here.
+# Using `secrets.GITHUB_TOKEN` fails on `workflow_run` with
+# "Resource not accessible by integration" when the action queries
+# branch protection rules over GraphQL.
+# See: https://github.com/ridedott/merge-me-action/issues/1581
+
+on:
+  workflow_run:
+    types:
+      - completed
+    workflows:
+      # List all required workflow names here.
+      - Build
+
+jobs:
+  auto_merge:
+    name: Auto-merge
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.actor == 'dependabot[bot]'
+
+    steps:
+      - uses: ridedott/merge-me-action@bb09d7d3c3504d3837816cc4eb821e663dc7ffde
+        with:
+          GITHUB_TOKEN: ${{ secrets.AWBOT_GH_TOKEN }}

@@ -1,183 +1,207 @@
 package io.akka.activitywatch.domain;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.akka.activitywatch.api.Json;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * The expected answers, as the original produced them.
+ * The answers the original gave, replayed against this rebuild.
  *
- * <p>Loaded from `corpus.json`, which `activitywatch-port/probes/probe_05_corpus.py` writes by
- * running ActivityWatch itself. Nothing in this class decides what is correct; it only reads
- * what was measured. `probe_05_corpus.py --check` fails if the file has drifted from the
- * original, so a stale expectation shows up as a red probe rather than a passing test.
+ * <p>`../activitywatch-port/probes/oracle.py` calls the original 260 times and writes down what
+ * came back; `corpus.json` is that file. A test here reads a case, calls the same function on
+ * this side, and compares. The point of the arrangement is that the expected answers were
+ * fixed before any of this code existed and cannot be edited to suit it: changing one means
+ * changing what the original answers, which `oracle.py --check` refuses.
  */
 public final class Corpus {
 
-  /** Offsets in the corpus are seconds from this instant. */
-  public static final Instant EPOCH = Instant.parse("2026-01-01T12:00:00Z");
+  private static final ObjectMapper MAPPER = new ObjectMapper();
+  private static final List<Case> CASES = load();
 
-  public record Heartbeat(Event event) {}
+  private Corpus() {}
 
-  public record Decision(String action, Event event) {
-    public boolean merged() {
-      return action.equals("merge");
+  /**
+   * @param answer what the original returned, absent when it raised
+   * @param error the exception class the original raised, absent when it returned
+   */
+  public record Case(String family, String name, Map<String, Object> args, Object answer,
+      String error, String message) {
+
+    public boolean raised() {
+      return error != null;
+    }
+
+    public String describe() {
+      return family + " / " + name;
     }
   }
 
-  public record Ingest(String name, double pulsetime, List<Event> heartbeats,
-      List<Decision> decisions, List<Event> bucket) {}
-
-  public record Idle(String name, double timeout, double pollTime, List<Double> readings,
-      List<IdleRule.Ping> pings) {}
-
-  public record Activity(String name, double pulsetime, List<String> keys, List<Event> window,
-      List<Event> afk, List<Event> floodedWindow, List<Event> notAfk, List<Event> clipped,
-      List<Event> activities) {}
-
-  private final List<Ingest> ingests = new ArrayList<>();
-  private final List<Idle> idles = new ArrayList<>();
-  private final List<Activity> activities = new ArrayList<>();
-
-  private static Corpus loaded;
-
-  public static synchronized Corpus load() {
-    if (loaded == null) {
-      loaded = new Corpus();
-    }
-    return loaded;
-  }
-
-  private Corpus() {
-    JsonNode root;
-    try (InputStream in = Corpus.class.getClassLoader().getResourceAsStream("corpus.json")) {
-      if (in == null) {
-        throw new IllegalStateException(
-            "corpus.json is not on the test classpath — run "
-                + "activitywatch-port/probes/probe_05_corpus.py to write it");
-      }
-      root = new ObjectMapper().readTree(in);
-    } catch (IOException e) {
-      throw new IllegalStateException("corpus.json could not be read", e);
-    }
-
-    for (JsonNode c : root.get("cases")) {
-      switch (c.get("kind").asText()) {
-        case "ingest" -> ingests.add(new Ingest(
-            c.get("name").asText(),
-            c.get("pulsetime").asDouble(),
-            events(c.get("heartbeats")),
-            decisions(c.get("decisions")),
-            events(c.get("bucket"))));
-        case "idle" -> idles.add(new Idle(
-            c.get("name").asText(),
-            c.get("timeout").asDouble(),
-            c.get("poll_time").asDouble(),
-            doubles(c.get("readings")),
-            pings(c.get("pings"))));
-        case "activity" -> activities.add(new Activity(
-            c.get("name").asText(),
-            c.get("pulsetime").asDouble(),
-            strings(c.get("keys")),
-            events(c.get("window")),
-            events(c.get("afk")),
-            events(c.get("flooded_window")),
-            events(c.get("not_afk")),
-            events(c.get("clipped")),
-            events(c.get("activities"))));
-        default -> throw new IllegalStateException("unknown case kind " + c.get("kind"));
+  public static List<Case> of(String family) {
+    List<Case> out = new ArrayList<>();
+    for (Case candidate : CASES) {
+      if (candidate.family().equals(family)) {
+        out.add(candidate);
       }
     }
-  }
-
-  public List<Ingest> ingests() {
-    return List.copyOf(ingests);
-  }
-
-  public List<Idle> idles() {
-    return List.copyOf(idles);
-  }
-
-  public List<Activity> activities() {
-    return List.copyOf(activities);
-  }
-
-  /** Seconds from the epoch, as the corpus writes them. */
-  public static Instant at(double seconds) {
-    return EPOCH.plus(seconds(seconds));
-  }
-
-  public static Duration seconds(double value) {
-    return Duration.ofNanos(Math.round(value * 1_000_000_000L));
-  }
-
-  private static Event event(JsonNode n) {
-    return Event.of(at(n.get("t").asDouble()), seconds(n.get("d").asDouble()), data(n.get("data")));
-  }
-
-  private static List<Event> events(JsonNode n) {
-    List<Event> out = new ArrayList<>();
-    n.forEach(e -> out.add(event(e)));
+    if (out.isEmpty()) {
+      throw new AssertionError("no cases in the corpus for " + family);
+    }
     return out;
   }
 
-  private static List<Decision> decisions(JsonNode n) {
-    List<Decision> out = new ArrayList<>();
-    n.forEach(d -> out.add(new Decision(d.get("action").asText(), event(d))));
-    return out;
+  public static int size() {
+    return CASES.size();
   }
 
-  private static List<IdleRule.Ping> pings(JsonNode n) {
-    List<IdleRule.Ping> out = new ArrayList<>();
-    n.forEach(p -> out.add(new IdleRule.Ping(
-        at(p.get("t").asDouble()),
-        seconds(p.get("d").asDouble()),
-        p.get("status").asText(),
-        p.get("pulsetime").asDouble())));
-    return out;
-  }
-
-  private static Map<String, Object> data(JsonNode n) {
-    Map<String, Object> out = new LinkedHashMap<>();
-    n.fields().forEachRemaining(f -> out.put(f.getKey(), scalar(f.getValue())));
-    return out;
-  }
-
-  private static Object scalar(JsonNode n) {
-    if (n.isTextual()) {
-      return n.asText();
-    }
-    if (n.isIntegralNumber()) {
-      return n.asLong();
-    }
-    if (n.isNumber()) {
-      return n.asDouble();
-    }
-    if (n.isBoolean()) {
-      return n.asBoolean();
-    }
-    if (n.isObject()) {
-      return data(n);
-    }
-    throw new IllegalStateException("unsupported value in corpus data: " + n);
-  }
-
-  private static List<Double> doubles(JsonNode n) {
-    List<Double> out = new ArrayList<>();
-    n.forEach(v -> out.add(v.asDouble()));
-    return out;
-  }
-
-  private static List<String> strings(JsonNode n) {
+  public static List<String> families() {
     List<String> out = new ArrayList<>();
-    n.forEach(v -> out.add(v.asText()));
+    for (Case candidate : CASES) {
+      if (!out.contains(candidate.family())) {
+        out.add(candidate.family());
+      }
+    }
     return out;
+  }
+
+  // ------------------------------------------------------------- reading in
+
+  @SuppressWarnings("unchecked")
+  public static List<Event> events(Object raw) {
+    List<Event> out = new ArrayList<>();
+    for (Object item : (List<Object>) raw) {
+      out.add(event((Map<String, Object>) item));
+    }
+    return out;
+  }
+
+  @SuppressWarnings("unchecked")
+  public static Event event(Map<String, Object> row) {
+    Event event = Event.of(instant(row.get("timestamp")),
+        ((Number) row.getOrDefault("duration", 0)).doubleValue(),
+        (Map<String, Object>) row.getOrDefault("data", Map.of()));
+    Object id = row.get("id");
+    return id == null ? event : event.withId(((Number) id).longValue());
+  }
+
+  public static Instant instant(Object raw) {
+    return OffsetDateTime.parse(String.valueOf(raw)).toInstant();
+  }
+
+  @SuppressWarnings("unchecked")
+  public static List<String> strings(Object raw) {
+    List<String> out = new ArrayList<>();
+    if (raw == null) {
+      return out;
+    }
+    for (Object item : (List<Object>) raw) {
+      out.add(String.valueOf(item));
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------ writing out
+
+  /**
+   * The same shape the oracle wrote, so two answers compare as text.
+   *
+   * <p>Comparing rendered text rather than objects is deliberate: a difference in how a
+   * duration or an instant is written is a difference a caller sees, and comparing parsed
+   * values would hide it.
+   */
+  public static Object render(Object value) {
+    if (value instanceof Event event) {
+      return Json.event(event);
+    }
+    if (value instanceof Duration duration) {
+      return Json.seconds(duration);
+    }
+    if (value instanceof Instant instant) {
+      return Json.instant(instant);
+    }
+    if (value instanceof List<?> list) {
+      List<Object> out = new ArrayList<>(list.size());
+      for (Object item : list) {
+        out.add(render(item));
+      }
+      return out;
+    }
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> out = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        out.put(String.valueOf(entry.getKey()), render(entry.getValue()));
+      }
+      return out;
+    }
+    return value;
+  }
+
+  /** A stable text for a value, with numbers normalised so 1 and 1.0 compare equal. */
+  public static String canonical(Object value) {
+    return write(normalise(value));
+  }
+
+  private static Object normalise(Object value) {
+    if (value instanceof Number number) {
+      double d = number.doubleValue();
+      // The two sides answer the same number through different types; the difference between
+      // a long 1 and a double 1.0 is Jackson's, not either system's.
+      return d == Math.rint(d) && Math.abs(d) < 1e15 ? (Object) (long) d : (Object) d;
+    }
+    if (value instanceof List<?> list) {
+      List<Object> out = new ArrayList<>(list.size());
+      for (Object item : list) {
+        out.add(normalise(item));
+      }
+      return out;
+    }
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> out = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        out.put(String.valueOf(entry.getKey()), normalise(entry.getValue()));
+      }
+      return out;
+    }
+    return value;
+  }
+
+  private static String write(Object value) {
+    try {
+      return MAPPER.writeValueAsString(value);
+    } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  private static List<Case> load() {
+    try (InputStream in = Corpus.class.getResourceAsStream("/corpus.json")) {
+      if (in == null) {
+        throw new IllegalStateException("corpus.json is not on the test classpath");
+      }
+      List<Map<String, Object>> rows = MAPPER.readValue(in, List.class);
+      List<Case> out = new ArrayList<>(rows.size());
+      for (Map<String, Object> row : rows) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> args = (Map<String, Object>) row.getOrDefault("args", Map.of());
+        out.add(new Case(
+            String.valueOf(row.get("family")),
+            String.valueOf(row.get("name")),
+            args,
+            row.get("answer"),
+            row.get("error") == null ? null : String.valueOf(row.get("error")),
+            row.get("message") == null ? null : String.valueOf(row.get("message"))));
+      }
+      return List.copyOf(out);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 }

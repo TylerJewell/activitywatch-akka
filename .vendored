@@ -1,0 +1,8 @@
+# Paths in this repository that hold somebody else's work, and why.
+#
+# `toolkit/source_hygiene.py` and `toolkit/copied_strings.py` read this file and print
+# what they skipped, so a scan reports 188 literals worth reading rather than 57,000
+# lines nobody wrote.
+
+webui  # ActivityWatch's own web interface, MPL-2.0, reused per RENDERING.md R3. Three files differ: src/stores/stream.ts is new, and src/stores/buckets.ts and src/views/Alerts.vue each gained a few lines. Everything else is the original's.
+src/main/resources/static-resources  # the build output of webui/, produced by `npm run build` there

@@ -49,9 +49,9 @@ public final class Flood {
         // Overlapping records of the same thing are one stretch, and the second collapses.
         Instant start = earlier(first.start, second.start);
         Instant end = later(first.end(), second.end());
-        first.start = start;
+        first.moveTo(start);
         first.duration = Duration.between(start, end);
-        second.start = end;
+        second.moveTo(end);
         second.duration = Duration.ZERO;
       } else if (gap.compareTo(NEGATIVE_GAP_TRIM.negated()) > 0 && gap.compareTo(pulsetime) <= 0) {
         Instant secondEnd = second.end();
@@ -59,10 +59,10 @@ public final class Flood {
           // The longer neighbour keeps its start, and the other collapses into it.
           if (first.duration.compareTo(second.duration) >= 0) {
             first.duration = Duration.between(first.start, secondEnd);
-            second.start = secondEnd;
+            second.moveTo(secondEnd);
             second.duration = Duration.ZERO;
           } else {
-            second.start = first.start;
+            second.moveTo(first.start);
             second.duration = Duration.between(second.start, secondEnd);
             first.duration = Duration.ZERO;
           }
@@ -70,7 +70,9 @@ public final class Flood {
           // Nothing says which side the gap belongs to, so neither side gets all of it.
           Instant midpoint = first.end().plus(Event.half(gap));
           first.duration = Duration.between(first.start, midpoint);
-          second.start = midpoint;
+          second.moveTo(midpoint);
+          // Measured from the midpoint as computed, not from where the event landed: the
+          // move rounds the start down to the millisecond and the length does not follow it.
           second.duration = Duration.between(midpoint, secondEnd);
         }
       }
@@ -116,7 +118,7 @@ public final class Flood {
 
     List<Event> out = new ArrayList<>(kept.size());
     for (Span span : kept) {
-      out.add(Event.of(span.start, span.duration, span.data));
+      out.add(Event.of(span.start, span.duration, span.data).withId(span.id));
     }
     return List.copyOf(out);
   }
@@ -131,11 +133,13 @@ public final class Flood {
 
   /** A working copy. Flooding moves events about, and the caller's list must not move. */
   private static final class Span {
+    private final Long id;
     private Instant start;
     private Duration duration;
     private final Map<String, Object> data;
 
     Span(Event event) {
+      this.id = event.id();
       this.start = event.timestamp();
       this.duration = event.duration();
       this.data = event.data();
@@ -143,6 +147,19 @@ public final class Flood {
 
     Instant end() {
       return start.plus(duration);
+    }
+
+    /**
+     * Moving an event rounds its start down to the millisecond.
+     *
+     * <p>This is not a detail of how the answer is written out: the original truncates on
+     * every assignment to a timestamp, and flooding assigns one mid-algorithm, so the rounded
+     * value is what the next pair — and the normalisation pass after it — compares against.
+     * Rounding only at the end gives a different answer for a pair a fraction of a
+     * millisecond apart.
+     */
+    void moveTo(Instant at) {
+      this.start = Event.truncateToMillis(at);
     }
   }
 }

@@ -1,7 +1,7 @@
 # activitywatch-akka
 
-Take a steady stream of "the user is still doing this" messages and work out how long they
-spent on each thing, leaving out the stretches when nobody touched the machine.
+Record what a person does on a computer, keep it on that computer, and answer questions about
+it.
 
 A port of [ActivityWatch/activitywatch](https://github.com/ActivityWatch/activitywatch)
 onto **Akka**, built with **Akka Specify**.
@@ -10,100 +10,88 @@ onto **Akka**, built with **Akka Specify**.
 
 ## Where it came from
 
-ActivityWatch records what you do on your computer. Small programs watch which window is in
-front and whether the keyboard and mouse have been touched, and send that to a server which
-keeps the history and answers questions about it. It was rebuilt here to find out how
-precisely a system has to be written down before it can be rebuilt on a different stack.
+ActivityWatch is a set of small programs that watch which window is in front, whether the
+keyboard and mouse have been touched, and what a browser has open, and send that to a server
+on the same machine which keeps the history and answers questions about it. Nothing leaves
+the machine.
 
-Only the recording and the adding up were rebuilt. Reading the keyboard and mouse, drawing
-the charts, and sorting activities into categories are somebody else's job here.
+It was rebuilt here to find out how precisely a system has to be written down before somebody
+else can rebuild it from the writing alone. The port is the vehicle; the written description
+is what was being made.
 
-Those written specifications live in a separate repository, `akka-specify-harness`, under
+Those written descriptions live in a separate repository, `akka-specify-harness`, under
 `activitywatch-port/`. It is private for now.
 
 ---
 
 ## ActivityWatch/activitywatch → this port
 
-📉 1,278 Python lines → **940 Java lines**<br>
-📁 14 files → **14 files**<br>
-⚡ 1,356 → **247** nanoseconds, deciding whether one message continues what came before<br>
-⚡ 35.3 → **3.0** milliseconds, turning a day of recorded windows into time per program<br>
-🎯 9,597 answers compared → **9,597 of 9,597 agree**<br>
-🗑️ 3 of 3 late messages destroy an already-recorded stretch → **0 of 3**<br>
-🔢 2 of 2 storage choices give a different history from the same messages → **1 of 1**<br>
-🧪 0 rules broken on purpose to check a test notices → **17**
+📉 8,898 Python and Rust lines → **8,019 Java lines**<br>
+📁 153 files → **67 files**<br>
+🖥️ 6 programs to start → **1**<br>
+⚡ 23.7 → **6.1** milliseconds, recording one "still doing this" message<br>
+⚡ 70.3 → **13.5** milliseconds, turning a day of recorded windows into time per program<br>
+⚡ 21.4 → **12.3** milliseconds, listing the recordings a machine holds<br>
+🎯 179 requests put to both → **173 answer identically**<br>
+🎯 28 command-line invocations put to both → **28 answer identically**<br>
+🧪 0 tests → **256**
 
-The two storage choices are the original's own, shipped in the same release, and they
-disagree with each other only when a message arrives out of order. Read
-[`bench/REPORT.md`](bench/REPORT.md) §1.2 before quoting that pair anywhere.
-
-Full method, and the numbers that did not make this list: [`bench/REPORT.md`](bench/REPORT.md).
+Full method, the six differences, and the numbers that did *not* make this list:
+[`bench/REPORT.md`](bench/REPORT.md).
 
 ---
 
 ## What it took to build
 
-⏱️ **1.2 hours** from the first command to the published repository, **1.2** of them active<br>
-💬 **318** exchanges with the model<br>
-✍️ **437,856** tokens written by the model, **74,295,089** counting everything sent and re-sent<br>
+⏱️ **161.6 hours** from the first command to the published repository, **6.3** of them active<br>
+💬 **1,678** exchanges with the model<br>
+✍️ **1,977,237** tokens written by the model, **704,522,708** counting everything sent and re-sent<br>
 🙋 **0** questions to a human<br>
-🧪 **56** tests
+🧪 **256** tests
 
 ```bash
-python toolkit/tokens.py --port activitywatch
+python toolkit/tokens.py --port activitywatch    # turns, tokens, elapsed and active time
 ```
 
-The record of every question, and where the time went, lives with the specifications.
+The record of every question, and where the time went, is in `port-log/` in the harness
+repository.
 
 ---
 
 ## What it does
 
-- **Two messages become one stretch of time only when they say exactly the same thing and
-  the second arrives soon enough after the first ends.** Change the window title and a new
-  stretch begins; look away for a minute and the old stretch stays the length it was.
-- **A message is compared against one earlier stretch and no others — the one written most
-  recently.** A message that turns up late therefore starts its own stretch rather than
-  extending one from further back.
-- **The machine counts as untouched the moment the time since the last key or click reaches
-  the limit, not after it.** A limit of three minutes means exactly three minutes of
-  stillness is already counted as away.
-- **A stretch is stamped with the moment of the last key or click, not the moment it was
-  noticed.** Time spent away is never counted as time spent working, however late the
-  message arrives.
-- **A gap of a few seconds between two records of the same program is that program
-  continuing; a gap between records of different programs is split down the middle.**
-  Nothing says which side a gap of silence belongs to, so neither side gets all of it.
-- **Time is only counted while the machine was in use.** Every recorded window is trimmed
-  down to the stretches when somebody was actually there before anything is added up.
+- **A message that says "still doing this" extends the recording it matches rather than
+  starting a new one.** A window kept open for an hour is one entry of an hour, not three
+  hundred entries of twelve seconds.
+- **A recording is only extended when the two say exactly the same thing and the gap is
+  small enough.** Change window, or come back after too long, and a new entry starts.
+- **A stretch when nobody touched the machine is recorded too, and can be taken out of the
+  answer.** Time at the desk and time away from it are different questions.
+- **Everything is answered from what is on the machine.** No account, no upload, no key.
+- **A recording never disappears because there is a lot of it.** Each day is kept
+  separately, so a year of history costs the same to write as the first day did.
+- **What the screen shows follows what the server holds, without asking again.** Open two
+  windows on the same page and a change made in one appears in the other.
 
 ---
 
 ## Design decisions
 
-**Naming the stretch a message extends.** A message that lengthens an earlier stretch says
-which one, by a number handed out when that stretch began. Nothing has to guess which
-record to update, so a message that arrives late can never overwrite the wrong one.
+**One process.** The original starts a server, a menu, three watchers and a notifier, and
+each of them can be running when the others are not. Here they are one program, so there is
+one thing to start and one thing that can be down.
 
-**Keeping the away-or-present switch on the server.** Whether somebody is currently away is
-written down rather than held in the memory of a running program. A machine that restarts
-while its owner is at lunch carries on the same absence instead of pretending they just sat
-down.
+**A day at a time.** Keeping every recording a machine has ever made in one place makes the
+oldest ones cost something every time a new one arrives. Splitting them by day means writing
+today never gets slower.
 
-**Handing out new stretches as they happen.** Anything watching a recording is given each
-new stretch as it is written, instead of asking again every few seconds. What it sees is
-what happened, in the order it happened, rather than a snapshot of whatever was there when
-it last asked.
+**Push, not ask.** The old screen asked the server for everything again every fifteen
+seconds, whether or not anything had changed. Now the server tells the screen when something
+changes, so a page left open costs nothing and a change shows up in a fraction of a second.
 
-**Keeping only the recent past in the record itself.** A recording holds its most recent two
-thousand stretches and says plainly when older ones have been dropped. The record stays
-small enough to be copied between machines quickly, which is what keeps a recording
-available when one of them fails.
-
-**Recognising a message already dealt with.** A message can carry a name, and one whose
-name has been seen before changes nothing. A retry after a lost connection cannot turn one
-stretch of work into two.
+**Say what the old one says, including where it is odd.** Three requests make the original
+answer with an error, and this one answers with the same error. Somebody's watcher may be
+written against that answer, and a port that quietly improved it would break them.
 
 ---
 
@@ -126,7 +114,7 @@ Restart Claude Code when it asks.
 > Then run /akka:setup to install everything this project needs, and /akka:build to
 > compile it, run the tests, and start it locally.
 
-**3. Open** http://localhost:9011/tracking/buckets.
+**3. Open** http://localhost:9150.
 
 ---
 
@@ -145,43 +133,52 @@ mvn compile
 akka local run
 ```
 
-The service starts on **port 9011**.
+The service starts on **port 9150**.
 
-### Record something
+### The command-line tools
 
 ```bash
-# make a place to record into
-curl -X POST localhost:9011/tracking/buckets/window_laptop \
-  -H 'content-type: application/json' \
-  -d '{"type":"currentwindow","client":"demo","hostname":"laptop"}'
-
-# say what is in front of you, twice, five seconds apart
-curl -X POST localhost:9011/tracking/buckets/window_laptop/heartbeat \
-  -H 'content-type: application/json' \
-  -d '{"timestamp":"2026-01-01T12:00:00Z","duration":0,"data":{"app":"editor"},"pulsetime":10}'
-curl -X POST localhost:9011/tracking/buckets/window_laptop/heartbeat \
-  -H 'content-type: application/json' \
-  -d '{"timestamp":"2026-01-01T12:00:05Z","duration":0,"data":{"app":"editor"},"pulsetime":10}'
-
-# one stretch, five seconds long
-curl localhost:9011/tracking/buckets/window_laptop/events
-
-# watch new ones arrive
-curl -N localhost:9011/tracking/buckets/window_laptop/watch
+mvn compile
+java -cp target/classes:$(cat classpath.txt) io.akka.activitywatch.cli.AwClientCli --help
+java -cp target/classes:$(cat classpath.txt) io.akka.activitywatch.cli.AwCli --help
+java -cp target/classes:$(cat classpath.txt) io.akka.activitywatch.cli.AwNotifyCli --help
 ```
+
+### Turn the watchers on
+
+They are off until asked, because they read what is on the screen.
+
+```bash
+curl -X POST http://localhost:9150/api/0/watchers/aw-watcher-window/start
+curl -X POST http://localhost:9150/api/0/watchers/aw-watcher-afk/start
+curl -X POST http://localhost:9150/api/0/watchers/aw-watcher-input/start
+```
+
+---
+
+## Model providers
+
+This system calls no model. There is nothing to configure and no key to set.
 
 ---
 
 ## Configuration
 
-There is nothing to set. The service reads no environment variables and calls no outside
-service.
+Everything is set in `src/main/resources/application.conf` and can be overridden by an
+environment variable.
 
-| Setting | Default | Notes |
+| Variable | Default | Notes |
 |---|---|---|
-| `akka.javasdk.dev-mode.http-port` in `src/main/resources/application.conf` | 9011 | the port used when running locally |
-| `retained` when a recording is made | 2,000 | how many recent stretches stay readable; the most that may be asked for is also 2,000 |
-| `pulsetime` on each message | none — every message carries it | how long after a stretch ends a message may still be part of it, in seconds |
+| `AW_HOSTNAME` | the machine's own name | what recordings made here are labelled with |
+| `AW_TESTING` | `false` | when true, deleting a recording needs no extra confirmation and one more page is allowed to talk to the server |
+| `AW_RETAINED_EVENTS` | `0` | how many recent entries each recording keeps to hand; `0` is all of them |
+| `AW_CORS_ORIGINS` | none | other pages allowed to talk to the server, separated by commas |
+| `AW_HOST` | `localhost` | the name this server answers to; a request addressed to any other name is refused |
+| `AW_CUSTOM_STATIC` | none | extra folders to serve pages from, written `name=path` and separated by commas |
+| `AW_WATCHER_AFK` / `AW_WATCHER_WINDOW` / `AW_WATCHER_INPUT` | `false` | start that watcher when the service starts |
+
+The notification service keeps its own file, `aw-notify/config.toml`, next to the other
+settings. It is written with the defaults in it the first time the service runs.
 
 ---
 
@@ -190,65 +187,65 @@ service.
 Everything not listed here behaves the same way on purpose, including the parts that look
 like mistakes.
 
-- **Which recorded stretch a message lengthens.** ActivityWatch does not record which
-  stretch a message was matched against, so each of its two ways of storing history picks
-  one for itself: one rewrites whichever stretch starts latest, the other whichever ends
-  latest. Given the same messages the two leave different histories, and in all three of
-  the cases measured each destroys a stretch the other keeps. This port hands every stretch
-  a number when it begins and rewrites the one that was actually matched, because a
-  recording that quietly loses an afternoon is worse than one that keeps an overlap.
-- **What survives a restart.** ActivityWatch remembers the stretch it wrote last in the
-  memory of the running server; after a restart it falls back to whichever stretch starts
-  latest, and after a late message those are not the same stretch, so the same messages
-  leave different histories depending on whether a restart happened in between. This port
-  writes it down, so a restart changes nothing.
-- **What the away-or-present switch survives.** ActivityWatch's watcher holds it in memory
-  and every run begins believing somebody is present. This port writes it down, so a
-  watcher that stops and starts while its owner is away carries on the same absence, which
-  is the answer somebody reading the history afterwards would expect.
-- **The order the two messages at a switch arrive in.** ActivityWatch's watcher queues them
-  to a client that sends them over the network, and nothing states what happens when two
-  are in flight at once. This port writes the pair as one record and delivers them from
-  that record, so half a switch cannot arrive and the two halves cannot swap places.
-- **A message that arrives twice.** ActivityWatch has no notion of this: a retry after a
-  timeout is simply another message, which joins the stretch before it harmlessly if it
-  lands soon enough and starts a second stretch if it does not. This port lets a message
-  carry a name and ignores one it has already applied, because it delivers the watcher's
-  messages from a written record and a written record is replayed when something fails.
-- **Watching a recording fill up.** ActivityWatch's web page asks the server again on a
-  timer. This port hands each new stretch out as it is written; a watcher that loses its
-  connection sees what was written after it reconnects, and reads the history back over the
-  gap to cover what it missed. This changes what a watcher can see — how much is missed
-  while disconnected, and how long before a change shows up.
-- **How far back a recording can be read.** ActivityWatch keeps everything in a database on
-  disk. This port keeps the most recent two thousand stretches and says plainly when older
-  ones have been dropped, because the recording is copied between machines on every write
-  and has to stay small enough for that to be quick.
-- **Folding a list of messages down without altering the list.** ActivityWatch's routine
-  for this removes the first item from the list it was handed and alters the items that
-  survive, so the same list cannot be folded twice. This port copies first, matching what
-  the routine beside it already does.
-- **The millisecond gap after somebody comes back.** ActivityWatch opens the new
-  present stretch one thousandth of a second after the last key or click, and the next
-  reading names the key or click itself — a thousandth of a second earlier — so it does not
-  join that stretch and a second, empty one is recorded instead. This port reproduces it
-  exactly. The gap follows from two rules this port copies, and changing it would mean
-  answering differently from the system this is a port of.
-- **What happens on the third way of storing history.** ActivityWatch ships a third
-  storage choice built on `peewee`. It failed to start on the machine this was measured on,
-  so nothing was run against it and nothing is claimed about it — `not checked`.
-- **What the Rust server does.** ActivityWatch ships a second server, written in Rust,
-  with its own implementation of these rules. Everything here was established against the
-  Python one. Whether the Rust one agrees is `not checked`.
-- **Splitting a gap that is an odd number of millionths of a second wide.** Both sides
-  round the halfway point to the nearest millionth of a second, with an exact half going to
-  the even one. The rounding was matched by reading the original's arithmetic rather than by
-  running it, and no measured case reaches it — `not checked`.
+- **Which recording gets extended when two of them start at the same instant.** The original
+  ships three ways of storing recordings and two of them disagree here: two pick the one that
+  started last, the third picks the one that ended last. This port extends the one the
+  decision actually named, by the number it was given when it was stored, because that is
+  what both readings mean whenever messages arrive in order.
+- **Recordings are cut to the window you asked for.** The original does this in the way it
+  ships with and does not in the other two. This port cuts, matching what is shipped.
+- **Three requests answer with an error.** Changing a recording's details, asking for the
+  log, and giving an unreadable date all fail on the original. This port fails the same way,
+  because a watcher may already be written against it.
+- **How much history one recording keeps to hand.** The original keeps everything in one
+  file and is limited by the disk. This port keeps the two hundred most recent entries
+  immediately to hand and the rest a day at a time, so a recording years old is still
+  cheap to add to. Everything is kept either way.
+- **What the server remembers about a recording after it is deleted.** The original keeps
+  the last entry it wrote in its own memory and does not forget it when the recording is
+  deleted, so making one again under the same name and sending a matching message loses that
+  message — and, on the version measured here, answers with an error. This port keeps that
+  memory with the recording, so deleting takes it with it.
+- **What happens when the screen loses its connection to the server.** The original's screen
+  asks again every few seconds and has no answer to this. This port's screen is told when
+  something changes, so it also has to say what happens when the telling stops: it picks up
+  where it left off, and where it cannot it reads the window it is showing again. Nothing is
+  shown twice and nothing is missed.
+- **What the number on an entry counts within.** The original numbers every entry on the
+  machine from one shared sequence, so the first entry of the second recording is numbered
+  four. This port numbers each recording's entries from one, because each recording is kept
+  separately and a shared counter would be one place everything has to queue. The number is a
+  handle, and every request that takes one already says which recording it is in.
+- **When something just written can be read back.** Both answer the next request with it. The
+  original writes to its file inside the request; this port writes it to the recording inside
+  the request and copies it to that day's store afterwards, and answers from both together.
+- **What time a recording says it was made.** The original writes down the clock on the wall
+  and labels it as the clock in London, so the moment it reports is wrong by however far the
+  machine is from London — seven hours, on the machine this was measured on. This port writes
+  down the moment. A caller that supplied its own time gets that time back on both.
+- **The sentence a "no such recording" answer ends with.** Both say `There's no bucket named
+  X`. The original then lists the addresses it thinks you meant, which its web framework
+  writes rather than ActivityWatch. This port stops after the first sentence.
+- **Where another program sends a notification.** The original listens on a second address of
+  its own for this, and only when its settings name one. This port takes it at `/notify` on
+  the address everything else uses, and answers "no such address" until the notification
+  service is running.
+- **Which of two activities with exactly the same time is listed first.** The original's
+  answer depends on the order things came out of memory that run, so it can differ between
+  two runs over the same day. This port puts them in alphabetical order.
+- **The layout of the settings file the notification service writes.** The original's is
+  written by a library and this one's is written by hand, with a line above each setting
+  saying what it is for. Both read either.
+- **The notification service was read, not run.** It is the one part of the original written
+  in Rust, and the machine this was built on has no way to build Rust. Its thirty-three rules
+  were established by reading its source rather than by running it, which is weaker evidence
+  than everything else here. If one thing in this port is wrong, it is most likely there.
 
 ---
 
 ## Licence
 
 ActivityWatch is Mozilla Public License 2.0, © the ActivityWatch contributors. This port
-reimplements the behaviour without copied source, and is published under the same licence;
-see [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md).
+ships ActivityWatch's own web interface unchanged and reimplements the rest of the behaviour
+without copied source; see [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md), which lists every
+string that appears in both.

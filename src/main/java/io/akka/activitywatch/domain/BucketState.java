@@ -4,137 +4,172 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
- * A bucket, and the one event a heartbeat is compared against — SPEC-001 §3 rules 6, 6a, 8, 9.
+ * A bucket: its metadata, the events it has written recently, and where the rest of them are
+ * — SPEC-001 §3 R32–R41.
  *
- * <p>{@code written} is in the order the events were written, not in time order, because the
+ * <p>{@code recent} is in the order the events were written, not in time order, because the
  * event a heartbeat is compared against is the one written last and not the one that happens
  * to be latest. When a heartbeat arrives out of order those are different events, and that is
- * exactly the case where the original's own storage backends disagree with each other.
+ * exactly the case where the original's own storage backends disagree with each other
+ * (§4 OD-1).
  *
- * <p>Two things here are bounded, and both bounds exist because this whole record is copied
- * between regions on every write: the number of events kept — SPEC-001 §4 OD-8 — and the
- * number of heartbeat names remembered for spotting a redelivery.
+ * <p>**Only the recent ones.** A bucket accumulates for years and this record is copied
+ * between regions on every write, so keeping every event here would put a week of ordinary
+ * use past the size the runtime will replicate. What is kept is the window a heartbeat and a
+ * read-your-own-write need; everything else lives in a page per day, written by a consumer and
+ * read back beside this. {@code pages} names the days this bucket has written to, so a range
+ * query knows which to ask — a decade of them is a few tens of kilobytes.
  */
-public record BucketState(String id, String type, String client, String hostname, int retained,
-    long nextId, long count, boolean complete, List<Stored> written, List<String> applied) {
-
-  public static final int DEFAULT_RETAINED = 2_000;
-
-  /**
-   * The most events a bucket will keep.
-   *
-   * <p>At a few hundred bytes each this leaves the state comfortably inside the size the
-   * runtime will replicate, which is a hard limit rather than a target.
-   */
-  public static final int MAX_RETAINED = 2_000;
+public record BucketState(String id, String name, String type, String client, String hostname,
+    String created, Map<String, Object> data, int retained, long nextId, long count,
+    boolean complete, List<Event> recent, Long lastWrittenId, List<String> pages) {
 
   /**
-   * How many heartbeat names are remembered.
+   * How many recently-written events a bucket keeps beside the pages.
    *
-   * <p>A redelivery follows the original closely — it is a retry, not an echo from an hour
-   * ago — so a short memory catches it, and a long one would only be state to copy.
+   * <p>Enough that a caller reading back what it has just written finds it whatever order the
+   * page consumer got to, and small enough that the record stays a few tens of kilobytes.
    */
-  private static final int REMEMBERED_COMMANDS = 100;
-
-  /** An event and the identity by which a later heartbeat names it. */
-  public record Stored(long id, Event event) {}
+  public static final int RECENT_WINDOW = 200;
 
   public static BucketState empty(String id) {
-    return new BucketState(id, null, null, null, DEFAULT_RETAINED, 0, 0, true, List.of(),
-        List.of());
+    return new BucketState(id, null, null, null, null, null, Map.of(), 0, 1, 0, true,
+        List.of(), null, List.of());
   }
 
   public boolean exists() {
     return type != null;
   }
 
-  public BucketState withCreated(String type, String client, String hostname, int retained) {
-    return new BucketState(id, type, client, hostname, retained, nextId, count, complete, written,
-        applied);
+  /** R43: the end of the most recent event this bucket wrote. */
+  public Optional<Instant> lastUpdated() {
+    return recent.stream().map(Event::end).max(Comparator.naturalOrder());
+  }
+
+  /** The metadata shape every route that answers about a bucket uses. */
+  public Map<String, Object> metadata() {
+    Map<String, Object> out = new LinkedHashMap<>();
+    // The order the original's model declares, which is what a caller reading the raw
+    // body sees: `created` sits between the identity and the name, not beside the rest of
+    // the fields a caller sends.
+    out.put("id", id);
+    out.put("created", created);
+    out.put("name", name);
+    out.put("type", type);
+    out.put("client", client);
+    out.put("hostname", hostname);
+    out.put("data", data);
+    return out;
   }
 
   public BucketState with(BucketEvent event) {
     return switch (event) {
-      case BucketEvent.Created e -> withCreated(e.type(), e.client(), e.hostname(), e.retained());
-      case BucketEvent.Inserted e -> withInserted(e.id(), e.event(), e.commandId());
-      case BucketEvent.Extended e -> withExtended(e.id(), e.duration(), e.commandId());
+      case BucketEvent.Created e -> new BucketState(id, e.name(), e.type(), e.client(),
+          e.hostname(), e.created(), e.data() == null ? Map.of() : e.data(), e.retained(),
+          1, 0, true, List.of(), null, List.of());
+      case BucketEvent.Updated e -> new BucketState(id,
+          e.name() == null ? name : e.name(),
+          e.type() == null ? type : e.type(),
+          e.client() == null ? client : e.client(),
+          e.hostname() == null ? hostname : e.hostname(),
+          created, e.data() == null ? data : e.data(), retained, nextId, count, complete,
+          recent, lastWrittenId, pages);
+      case BucketEvent.Deleted e -> empty(id);
+      case BucketEvent.Inserted e -> withInserted(e.id(), e.event());
+      case BucketEvent.Extended e -> withChanged(e.id(),
+          existing -> existing.withDuration(e.duration()), count);
+      case BucketEvent.Replaced e -> withChanged(e.id(),
+          existing -> e.event().withId(e.id()), count);
+      case BucketEvent.Removed e -> withRemoved(e.id());
     };
   }
 
-  /** Whether a heartbeat by this name has already been applied — SPEC-001 §3 rule 6a. */
-  public boolean hasApplied(String commandId) {
-    return commandId != null && applied.contains(commandId);
-  }
-
-  private BucketState withInserted(long storedId, Event event, String commandId) {
-    List<Stored> next = new ArrayList<>(written);
-    next.add(new Stored(storedId, event));
+  private BucketState withInserted(long storedId, Event event) {
+    Event stored = event.withId(storedId);
+    List<Event> next = new ArrayList<>(recent);
+    next.add(stored);
     boolean stillComplete = complete;
-    while (next.size() > retained) {
+    // Two bounds, and they mean different things. The window is how much is kept here; a
+    // retention cap is an operator saying the bucket may forget, and only that one makes the
+    // history incomplete.
+    while (next.size() > RECENT_WINDOW) {
       next.remove(0);
+    }
+    long kept = count + 1;
+    if (retained > 0 && kept > retained) {
+      kept = retained;
       stillComplete = false;
     }
-    return new BucketState(id, type, client, hostname, retained,
-        Math.max(nextId, storedId + 1), count + 1, stillComplete, List.copyOf(next),
-        remember(commandId));
+    LinkedHashSet<String> nextPages = new LinkedHashSet<>(pages);
+    nextPages.add(EventSelection.pageOf(id, stored.timestamp()));
+    return new BucketState(id, name, type, client, hostname, created, data, retained,
+        Math.max(nextId, storedId + 1), kept, stillComplete, List.copyOf(next), storedId,
+        List.copyOf(nextPages));
   }
 
-  private BucketState withExtended(long storedId, Duration duration, String commandId) {
-    List<Stored> next = new ArrayList<>(written);
+  private BucketState withChanged(long storedId, java.util.function.UnaryOperator<Event> change,
+      long newCount) {
+    List<Event> next = new ArrayList<>(recent);
     for (int i = next.size() - 1; i >= 0; i--) {
-      if (next.get(i).id() == storedId) {
-        next.set(i, new Stored(storedId, next.get(i).event().withDuration(duration)));
+      if (Long.valueOf(storedId).equals(next.get(i).id())) {
+        next.set(i, change.apply(next.get(i)));
         break;
       }
     }
-    return new BucketState(id, type, client, hostname, retained, nextId, count, complete,
-        List.copyOf(next), remember(commandId));
+    return new BucketState(id, name, type, client, hostname, created, data, retained, nextId,
+        newCount, complete, List.copyOf(next), storedId, pages);
   }
 
-  private List<String> remember(String commandId) {
-    if (commandId == null) {
-      return applied;
-    }
-    List<String> next = new ArrayList<>(applied);
-    next.add(commandId);
-    while (next.size() > REMEMBERED_COMMANDS) {
-      next.remove(0);
-    }
-    return List.copyOf(next);
-  }
-
-  /** The event a heartbeat is compared against: the one written last. */
-  public Optional<Stored> lastWritten() {
-    return written.isEmpty() ? Optional.empty() : Optional.of(written.get(written.size() - 1));
-  }
-
-  /**
-   * The retained events that overlap the range, newest first — SPEC-001 §3 rules 11, 11a.
-   *
-   * <p>Events are returned whole. A range is a question about which events to look at, not an
-   * instruction to cut them.
-   */
-  public List<Stored> inRange(Instant from, Instant to, Integer limit) {
-    List<Stored> selected = new ArrayList<>();
-    for (Stored stored : written) {
-      Event event = stored.event();
-      boolean afterStart = from == null || !from.isAfter(event.end());
-      boolean beforeEnd = to == null || !event.timestamp().isAfter(to);
-      if (afterStart && beforeEnd) {
-        selected.add(stored);
+  private BucketState withRemoved(long storedId) {
+    List<Event> next = new ArrayList<>();
+    for (Event event : recent) {
+      if (!Long.valueOf(storedId).equals(event.id())) {
+        next.add(event);
       }
     }
-    // Ascending and then reversed, not descending: the two differ for events sharing a
-    // timestamp, and the original sorts this way round.
-    selected.sort(Comparator.comparing((Stored s) -> s.event().timestamp()));
-    java.util.Collections.reverse(selected);
-    if (limit != null && limit >= 0 && limit < selected.size()) {
-      selected = selected.subList(0, limit);
+    Long stillLast = lastWrittenId != null && lastWrittenId == storedId ? null : lastWrittenId;
+    return new BucketState(id, name, type, client, hostname, created, data, retained, nextId,
+        Math.max(0, count - 1), complete, List.copyOf(next), stillLast, pages);
+  }
+
+  /** R9: the event a heartbeat is compared against — the one written last. */
+  public Optional<Event> lastWritten() {
+    if (lastWrittenId != null) {
+      for (int i = recent.size() - 1; i >= 0; i--) {
+        if (lastWrittenId.equals(recent.get(i).id())) {
+          return Optional.of(recent.get(i));
+        }
+      }
     }
-    return List.copyOf(selected);
+    // Nothing has been written since this bucket last held an event, so the comparison falls
+    // back to the newest event it still has -- which is what the original does after a
+    // restart, when its in-process cache is empty.
+    return EventSelection.newestFirst(recent).stream().findFirst();
+  }
+
+  /** R39: the event `replace_last` rewrites is the one with the greatest timestamp. */
+  public Optional<Event> latestByTimestamp() {
+    return recent.stream().max(Comparator.comparing(Event::timestamp));
+  }
+
+  public Optional<Event> byId(long storedId) {
+    return recent.stream().filter(e -> Long.valueOf(storedId).equals(e.id())).findFirst();
+  }
+
+  /** The recently written events overlapping a range, uncut and unordered. */
+  public List<Event> overlapping(Instant from, Instant to) {
+    return EventSelection.overlapping(recent, from, to);
+  }
+
+  /** Which pages a range could touch. */
+  public List<String> pagesFor(Instant from, Instant to) {
+    return EventSelection.pagesFor(id, from, to, pages);
   }
 }
