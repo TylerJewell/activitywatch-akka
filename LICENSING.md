@@ -6,21 +6,22 @@ This repository holds two kinds of code and they are not under the same licence.
 
 Everything outside the vendored trees listed below was written for this project. It is a
 clean-room implementation: written against a specification derived by running
-[ActivityWatch/activitywatch](https://github.com/ActivityWatch/activitywatch) and recording what it does, not by translating
-its source. See `../activitywatch-port/specs/SPEC-001-activitywatch.md` for the rules it was built to, and `ACKNOWLEDGEMENTS.md` for the
+[ActivityWatch/activitywatch](https://github.com/ActivityWatch/activitywatch) and recording what it does, not by translating its
+source. See `../activitywatch-port/specs/SPEC-001-activitywatch.md` for the rules it was built to, and `ACKNOWLEDGEMENTS.md` for the
 places any text was carried across and why.
 
-It is licensed under the Apache License 2.0. See `LICENSE`.
+It is licensed under the Apache License 2.0, Copyright 2026 Tyler Jewell. See `LICENSE`
+and `NOTICE`.
 
 ## The interface — MPL-2.0, as ActivityWatch/activitywatch licensed it
 
 - `src/main/resources/static-resources/`
 - `webui/`
 
-That code was written by the ActivityWatch/activitywatch project and is shipped here **verbatim**, reused
-rather than rebuilt, per this harness's RENDERING.md R3. It remains under the licence its
-authors chose, unmodified, in `LICENSE-activitywatch` and beside the code itself. Nothing
-about this repository relicenses it.
+That code was written by the ActivityWatch/activitywatch project, Copyright the ActivityWatch/activitywatch authors, and is shipped
+here **verbatim**, reused rather than rebuilt, per this harness's RENDERING.md R3. It
+remains under the licence its authors chose, unmodified, in `LICENSE-activitywatch` and beside
+the code itself. Nothing about this repository relicenses it.
 
 ## Why the split
 

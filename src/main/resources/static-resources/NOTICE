@@ -1,0 +1,9 @@
+The files in this directory are from ActivityWatch/activitywatch
+(https://github.com/ActivityWatch/activitywatch).
+
+Copyright the ActivityWatch/activitywatch authors
+Licensed under MPL-2.0. The full text is in LICENSE beside this file.
+
+They are reused here verbatim and unmodified, per this harness's RENDERING.md R3.
+Nothing in the parent repository relicenses them; the Apache License at the root
+of this repository does not apply to them.
